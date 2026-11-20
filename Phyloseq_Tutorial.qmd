@@ -1,0 +1,274 @@
+---
+title: "Phyloseq Tutorial"
+subtitle: "Instructions on how to use Phyloseq with a *Phaeodactylum tricornutum* microbiome quantitative stable isotope probing (qSIP) PacBio 16S dataset."
+date: 11/18/26
+format: html
+code-fold: false
+editor: visual
+author: Kelly C. Shannon
+toc: true
+toc-depth: 3
+number-sections: false
+mainfont: Georgia
+execute: 
+  echo: true
+---
+
+```{r}
+#| warning: false
+#| label: download-packages
+#| echo: true
+#| eval: false
+
+install.packages("biocmanager")
+PS_packages <- c("phyloseq", "microViz", "microbiome")
+BiocManager::install(PS_packages)
+
+#Set your working directory to where folder containing the .qmd file!
+```
+
+```{r}
+#| warning: false
+#| label: load-packages
+#| code-fold: false
+#| echo: true
+
+library(BiocManager)
+library(phyloseq)
+library(Biostrings)
+library(dplyr)
+library(tidyverse)
+library(tibble)
+library(microViz)
+library(microbiome)
+library(ggpubr)
+library(patchwork)
+```
+
+# Prepare the Phyloseq Object
+
+### Remember, Phyloseq is picky with formatting!
+
+#### Format:
+
+- OTU (or ASV) Count Table: Matrix
+
+- Taxonomy Table: Matrix
+
+  - Note that Domain in this column in this data is actually the database used to annotate the ASV.
+
+- Sample Data (or Metadata) Table: Data Frame
+
+#### A helpful graphic from [Holmes and McMurdie (2013)](https://doi.org/10.1371/journal.pone.0061217) for remembering this structure: 
+
+![Figure 3 from the PLOS One paper](images/PS_structure.png){fig-align="center"}
+
+```{r}
+#| warning: false
+#| label: read-data
+#| code-fold: true
+#| eval: true
+#| output: false
+#| code-summary: "Code to read in and format data for Phyloseq"
+
+Pt_taxa <- as.data.frame(read.csv("Pt_microbiome_taxa.csv", row.names = 1))
+Pt_counts <- as.data.frame(read.csv("Pt_microbiome_counts.csv", row.names = 1))
+Pt_meta <- as.data.frame(read.csv("Pt_microbiome_metadata.csv", row.names = 1))
+
+dim(Pt_taxa)
+dim(Pt_counts)
+dim(Pt_meta)
+
+head(Pt_taxa)
+head(Pt_counts)
+head(Pt_meta)
+
+#Set count table rownames to ASVs
+taxa <- rownames(Pt_counts)
+taxa_ASV_names <- taxa %>% str_replace_all("sp", "ASV")
+rownames(Pt_counts) <- taxa_ASV_names #This has to be the same as the taxonomy table
+rownames(Pt_taxa) <- rownames(Pt_counts)
+
+samples <- rownames(Pt_meta)
+Pt_meta$"Sample" <- samples
+if (all(colnames(Pt_counts) == samples)) {
+  print("Good to go")
+} else {
+  print("The count and metadata tables do not have equal sample data")
+}
+colnames(Pt_counts) <- Pt_meta$Sample 
+```
+
+- The OTU table column names have to equal the sample data rownames.
+
+  - If taxa are rows in the OTU table.
+
+### Now let's build the Phyloseq object with the taxonomy, OTU, and metadata tables.
+
+- You can also add a phylogenetic tree and fasta sequences to the object, but we won't cover that here.
+
+```{r}
+#| warning: false
+#| label: build-phyloseq-object
+#| code-fold: true
+#| output: false
+#| code-summary: "Code to check the classes of the Phyloseq object files and building the object"
+
+if (class(Pt_taxa) == "data.frame") {
+  Pt_taxa_mat <- as.matrix(Pt_taxa)
+} else{
+  print("Not a data frame")
+}
+
+if (class(Pt_counts) == "data.frame") {
+  Pt_counts_mat <- as.matrix(Pt_counts)
+} else{
+  print("Not a data frame")
+}
+
+if (class(Pt_meta) == "data.frame") {
+  print("Good to go!")
+} else{
+  print("You need a data frame")
+}
+
+Pt_Microbiome_PS <- phyloseq(otu_table(Pt_counts_mat, taxa_are_rows = TRUE), 
+                             tax_table(Pt_taxa_mat), 
+                             sam_data(Pt_meta))
+Pt_Microbiome_PS
+```
+
+```{r}
+#| warning: false
+#| label: examining-object
+#| code-fold: true
+#| echo: true
+#| eval: false
+#| code-summary: "Code to examine Phyloseq object contents"
+
+Pt_Microbiome_PS@otu_table
+Pt_Microbiome_PS@tax_table
+Pt_Microbiome_PS@sam_data
+Pt_Microbiome_PS@refseq
+Pt_Microbiome_PS@phy_tree
+
+#You could re-save these contents as files like this: 
+
+Pt_Microbiome_PS_taxa <- data.frame(Pt_Microbiome_PS@tax_table)
+head(Pt_Microbiome_PS_taxa)
+class(Pt_Microbiome_PS_taxa)
+```
+
+# Phyloseq Alpha- and Beta-Diversity Analysis
+
+### Preparing the Phyloseq object for analyses
+
+- Do you spot any issues with the present taxa?
+
+```{r}
+#| warning: false
+#| label: cleaning-object
+
+#Check for contaminant species
+Pt_Microbiome_PS_sp <- Pt_Microbiome_PS %>% 
+  microbiome::aggregate_taxa(level = "Species")
+Pt_Microbiome_PS_sp
+
+Species_DF <- data.frame(Pt_Microbiome_PS_sp@tax_table)
+sort(unique(Species_DF$Species)) #Easier to look at this in the console
+
+unwanted_species <- c("Escherichia coli", "Pt Chloroplast", "Unassigned")
+
+Pt_Microbiome_PS_sp_clean <- Pt_Microbiome_PS_sp %>% 
+  subset_taxa(!Species %in% unwanted_species) #Trim away these taxa we don't want
+Pt_Microbiome_PS_sp_clean
+
+#Since this is qSIP data, we don't want to merge all the density bins into their original source tubes (each from one single culture)--biological replicates in Iron-Replete and Iron-Deplete cultures (13C/12C-bicarbonate added to cultures count as additional replicates).
+Pt_Microbiome_PS_Culture <- Pt_Microbiome_PS_sp_clean %>% 
+  merge_samples("Source", fun = "sum")
+Pt_Microbiome_PS_Culture
+
+#For some reason, this screws up some of the variables, so let's add them back
+
+Sample <- rownames(Pt_Microbiome_PS_Culture@sam_data) #This variable will be corrected later on
+dput(Sample) #Copy this to easily fill in new variables manually
+Iron <- c("High", "High", "High", "High", "High", "High", 
+          "Low", "Low", "Low", "Low", "Low", "Low")
+
+sample_data(Pt_Microbiome_PS_Culture)$Iron <- Iron
+sample_data(Pt_Microbiome_PS_Culture)$Iron #Check that it worked
+
+#Now let's rarefy the object and remove very low-count taxa
+sort(sample_sums(Pt_Microbiome_PS_sp_clean))
+sort(sample_sums(Pt_Microbiome_PS_Culture))
+mindepth <- min(sample_sums(Pt_Microbiome_PS_Culture))
+Pt_Microbiome_PS_Culture_Rare <- Pt_Microbiome_PS_Culture %>% 
+  rarefy_even_depth(sample.size = mindepth, replace = FALSE)
+
+sort(sample_sums(Pt_Microbiome_PS_Culture_Rare))
+sort(taxa_sums(Pt_Microbiome_PS_Culture_Rare))
+
+Pt_Microbiome_PS_Culture_Rare <- prune_taxa(taxa_sums(Pt_Microbiome_PS_Culture_Rare) > 100,
+                                            Pt_Microbiome_PS_Culture_Rare)
+
+sort(taxa_sums(Pt_Microbiome_PS_Culture_Rare))
+```
+
+### Now let's do some alpha- and beta-diversity exploring with MicroViz
+
+- The code for MicroViz plots generated in the GUI can be copied, pasted, and modified in RStudio!
+
+```{r}
+#| eval: false
+
+Pt_Microbiome_PS_Culture_Rare %>% tax_fix() %>% ord_explore()
+
+```
+
+### Some example alpha-div. plots using the MicroViz and Microbiome packages
+
+```{r}
+#| label: making-figures
+#| warning: false
+#| code-fold: true
+#| code-summary: "Making alpha-div. figures"
+#| fig-cap-location: bottom
+#| fig-cap: "Alpha diversity measurements of the *P. tricornutum* enrichment community without the inclusion of chloroplast sequences, colored by Iron availability. A. is Shannon diversity and B. is inverse Simpson diversity—each showing richness and evenness of heterotroph species."
+#| fig-height: 5
+#| fig-width: 10
+#| fig-align: center
+#| fig-alt: "Two dot plots of alpha-diversity across culture replicates"
+
+#Diversity (applies to sam_data)
+Pt_Microbiome_Div_DF <- Pt_Microbiome_PS_Culture_Rare %>% 
+  microbiome::diversity(index = "all")
+
+Pt_Meta_PS <- data.frame(Pt_Microbiome_PS_Culture_Rare@sam_data)
+Pt_Meta_PS_Div <- cbind(Pt_Meta_PS, Pt_Microbiome_Div_DF) %>% 
+  dplyr::select(-Sample) %>% 
+  rownames_to_column("Sample")
+
+Shanplot <- Pt_Meta_PS_Div %>% ggplot(aes(x = Sample, y = shannon)) +
+  geom_point(size = 4, shape = 21, color = "black", aes(fill = Iron)) + 
+  theme_classic2() +
+  scale_fill_manual(values = c("purple", "darkgreen")) +
+  scale_y_continuous(limits = c(2, 2.5), 
+                     breaks = c(2.1, 2.2, 2.3, 2.4, 2.5)) +
+  labs(y = "Shannon Diversity", x = "") +
+  theme(axis.text = element_text(size = 12, color = "black"), 
+        legend.text = element_text(size = 12, color = "black"))
+
+Simpplot <- Pt_Meta_PS_Div %>% ggplot(aes(x = Sample, y = inverse_simpson)) +
+  geom_point(size = 4, shape = 21, color = "black", aes(fill = Iron)) + 
+  theme_classic2() +
+  scale_fill_manual(values = c("purple", "darkgreen")) +
+  scale_y_continuous(limits = c(6.2, 8.4), 
+                     breaks = seq(6.2, 8.4, by = 0.4)) +
+  labs(y = "Inv. Simpson Diversity", x = "") +
+  theme(axis.text = element_text(size = 12, color = "black"), 
+        legend.text = element_text(size = 12, color = "black"))
+
+(Shanplot + Simpplot) +
+  plot_layout(guides = "collect") + #Add one shared legend
+  plot_annotation(tag_levels = "A", tag_suffix = ".") #Control your caption labels
+```
