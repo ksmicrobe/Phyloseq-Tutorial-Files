@@ -159,7 +159,7 @@ head(Pt_Microbiome_PS_taxa)
 class(Pt_Microbiome_PS_taxa)
 ```
 
-# Phyloseq Alpha- and Beta-Diversity Analysis
+# Phyloseq Microbiome Analysis
 
 ### Preparing the Phyloseq object for analyses
 
